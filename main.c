@@ -230,7 +230,7 @@ void als_recsys( sparseMtx*MtxR, float *X, float *Y,
         error = fabsf(error_new - error_old) / error_new;
 
         error_old = error_new;
-        printf("iter = %i, error = %f \n", iter, error);
+        printf("iter = %i, error = %f %f\n", iter, error,error_new);
 
         iter++;
     }

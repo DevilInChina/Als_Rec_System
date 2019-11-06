@@ -1,3 +1,6 @@
+
+#define BASE_OPT
+#ifdef BASE_OPT
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -5,7 +8,7 @@
 #include <math.h>
 #include <sys/time.h>
 
-#include "mmio_highlevel.h"
+
 #define CORE_NUMBER 4
 #define type float
 
@@ -20,20 +23,17 @@ typedef struct sparseMtx{
 
 #define pos(i,j,M) ((i)*(M)+(j))
 
-#define MALLOC(name,T,SIZE)\
-typeof(T)* name = (typeof(T)*)malloc(sizeof(T)*(SIZE))
 
-#define CALLOC(name,T,SIZE)\
-typeof(T)* name = (typeof(T)*)calloc(sizeof(T),SIZE)
-
-#define dotprod(res,a,b,len)\
-(res)=0;for(typeof(a) ba = a,bb = b,ea = a+len;ba!=ea;++ba,++bb)(res)+=*ba*(*bb)
 ///@todo add parallel on matmat
 #define trans_Next(i,m,n)\
 ((i)%(n)*(m))+((i)/(n))
 
 #define trans_Prev(i,m,n)\
 ((i)%(m)*(n))+((i)/(m))
+type dotprod(type *res,type *a,type *b,int len) {
+    (*res) = 0;
+    for (type *ba = a, *bb = b, *ea = a + len; ba != ea; ++ba, ++bb)(*res) += *ba * (*bb);
+}
 void transMoveData(type *mtx,int i,int m,int n){
     type s = mtx[i];
     int cur = i;
@@ -83,7 +83,7 @@ void matmat_transB(float *C, float *A, float *BT, int m, int k, int n)
     type res;
     for (int i = 0; i < m; i++) {
         for (int j = 0; j < n; j++) {
-            dotprod(res, A + i * k, BT + j * k, k);
+            dotprod(&res, A + i * k, BT + j * k, k);
             C[pos(i,j,n)] = res;
         }
     }
@@ -110,7 +110,7 @@ void specMatmat_transB(const sparseMtx*cp,type*ret,type *A,type*BT,int m,int k,i
     for(int row = 0 ; row < m ; ++row){
         for(int j = cp->ia[row],col;j < cp->ia[row+1]; ++j){
             col = cp->ja[j];
-            dotprod(res, A + row * k, BT + col * k, k);
+            dotprod(&res, A + row * k, BT + col * k, k);
           //  printf("%d %d %d\n",row,col,k);
             //fflush(stdout);
             ////@todo wrong here
@@ -149,7 +149,7 @@ void ll_dotprod(type *result,type *a,type *b ,int len){
 float dotproduct(float *vec1, float *vec2, int n)
 {
     float result =0;
-    dotprod(result,vec1,vec2,n);
+    dotprod(&result,vec1,vec2,n);
     return result;
 }
 
@@ -158,14 +158,14 @@ void matvec(float *A, float *x, float *y, int m, int n)
 ///#pragma omp parallel for
     for (int i = 0; i < m; i++)
     {
-        dotprod(y[i],A+i*n,x,n);
+        dotprod(y+i,A+i*n,x,n);
     }
 }
 
 float vec2norm(float *x, int n)
 {
     float sum = 0;
-    dotprod(sum,x,x,n);
+    dotprod(&sum,x,x,n);
     return sqrtf(sum);
 }
 
@@ -178,7 +178,7 @@ type getF(type *a,type *A,int n,type *temp){////using temp storage
     type ret = 0;
     memset(temp,0, sizeof(type)*n);
     matvec(A,a,temp,n,n);
-    dotprod(ret,a,temp,n);
+    dotprod(&ret,a,temp,n);
     return ret;
 }
 void showMtx(const type *a,int n,int m){
@@ -282,12 +282,12 @@ void cg(type *A, type *x, type *b, int n, int *iter, int maxiter, type threshold
     residual(A, x, b, p, n);
     type *r = malloc(sizeof(type) * n);
     memcpy(r, p, sizeof(type) * n);
-    MALLOC(temp,type,n);
+    type *temp = (type*)malloc(sizeof(type)*n);
     for (int i = 0; i < n; ++i)x[i] = 0.0;
     type rdot, rdot_1 = 0;
 
     for (*iter = 0; *iter < maxiter; ++*iter) {
-        dotprod(rdot, r, r, n);
+        dotprod(&rdot, r, r, n);
         if (sqrtf(rdot) < threshold) {
             break;
         }
@@ -355,7 +355,7 @@ void transpose(float *AT, const float *A, int m, int n)
             AT[j * m + i] = A[i * n + j];
 }
 void denseToCsc(const type *x,int m,int n,sparseMtx *Csc,int nnz) {
-    MALLOC(TEMP,type,m*n);
+    type*TEMP=(type*)malloc(sizeof(type)*m*n);
     transpose(TEMP,x,m,n);
     sparseMtx Mtx;
     denseToCsr(TEMP,n,m,&Mtx,nnz);
@@ -373,8 +373,7 @@ void csrToCsc(const sparseMtx*Mtx,sparseMtx *ret){
     ret->val = malloc(sizeof(type)*(Mtx->ia[Mtx->m] - Mtx->ia[0]));
     int m = ret->m,n = ret->n;
 
-    CALLOC(cnt,int,(n+1));
-
+    int *cnt = (int*)calloc(sizeof(int),(n+1));
     int nnz = Mtx->ia[m] - Mtx->ia[0];
     int row = 0,col;
 
@@ -398,6 +397,8 @@ void csrToCsc(const sparseMtx*Mtx,sparseMtx *ret){
 
     free(cnt);
 }
+
+#endif
 /*
 0 1 3 5 ia
 1 0 2 0 1  ja
