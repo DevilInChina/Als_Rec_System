@@ -8,12 +8,18 @@
 #include <math.h>
 #include <sys/time.h>
 
-#define OFAS
+#define OFAST
 
-#define CORE_NUMBER 4
+#define CG_SWITCH
+
+#define SPEC_MATMAT_TRANSB_MULTITHREAD
+#define CORE_NUMBER 160
+
+#define THREAD_NUMBERS 160
 #define type float
 
-//#define DOT_PROD_PARALLEL
+
+
 
 typedef struct sparseMtx{
     int m,n;
@@ -24,7 +30,6 @@ typedef struct sparseMtx{
 }sparseMtx;
 
 #define pos(i,j,M) ((i)*(M)+(j))
-#define CG_SWITCH
 
 ///@todo add parallel on matmat
 #define trans_Next(i,m,n)\
@@ -47,14 +52,10 @@ typedef struct Para{
 }Para;
 
 #ifdef OFAST
-void updateMtx_part(Para*parameter) __attribute__((optimize("Ofast")));
 
-void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
-                       int f, float lamda, int begL, int endL,
-                       double *time_prepareA, double *time_prepareb, double *time_solver) __attribute__((optimize("Ofast")));
-type dotprod(type *res,const type *a,const type *b,int len) __attribute__((optimize("Ofast")));
+void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float threshold) __attribute__((optimize("Ofast")));
 #endif
-type dotprod(type *res,const type *a,const type *b,int len) {
+inline type dotprod(type *res,const type *a,const type *b,int len) {
     (*res) = 0;
     for (const type *ba = a, *bb = b, *ea = a + len; ba != ea; ++ba, ++bb)(*res) += *ba * (*bb);
 }
@@ -85,7 +86,7 @@ void trans_to_T_matrix(type*A,int m,int n){
 }
 
 
-void matmat(type *C,type *A,type *B,int m,int k,int n){
+void matmat(type *C,const type *A,type *B,int m,int k,int n){
     //trans_to_T_matrix(B,k,n);
 
     memset(C,0, sizeof(type)*m*n);
@@ -105,6 +106,7 @@ void matmat_BtB(float *C, const float *BT, int m, int k, int n)
 {
     memset(C, 0, sizeof(float) * m * n);
     type res;
+
     for (int i = 0; i < m; i++) {
         for (int j = i; j < n; j++) {
             dotprod(&res, BT + i * k, BT + j * k, k);
@@ -130,53 +132,64 @@ int check(type *a,int len){
     }
     return cnt;
 }
+///void specMatmat_transB(const sparseMtx*cp,type*ret,type *A,type*BT,int m,int k,int n) __attribute__((optimize("Ofast")));
 
+typedef struct TransB_Parameter{
+    const sparseMtx*cp;
+    type *ret;
+    type *A;
+    type *BT;
+    int m,k,n,begL,endL;
+}TransB_Parameter;
+#ifdef SPEC_MATMAT_TRANSB_MULTITHREAD
+void specMatMat_transB_part(TransB_Parameter*para){
+#pragma omp parallel for
+    for(int i = para->begL ; i < para->endL; ++i){
+        dotprod(para->ret+i,para->A+para->cp->OtherI[i]*para->k,para->BT+para->cp->ja[i]*para->k,para->k);
+        para->ret[i] = para->cp->val[i]-para->ret[i];
+        para->ret[i]*=para->ret[i];
+    }
+}
 void specMatmat_transB(const sparseMtx*cp,type*ret,type *A,type*BT,int m,int k,int n){
     int nnz = cp->ia[m] - cp->ia[0];
-#pragma parallel omp for
+    int kk =  (nnz)%CORE_NUMBER;
+    int totThreads = CORE_NUMBER+(kk!=0);
+    TransB_Parameter *para=malloc(sizeof(TransB_Parameter)*(totThreads));
+    pthread_t *pids = malloc(sizeof(pthread_t)*totThreads);
+    int block = (nnz)/CORE_NUMBER;
+    for(int i = 0 ; i < totThreads ; ++i){
+        para[i].cp = cp;
+        para[i].A = A;
+        para[i].BT = BT;
+        para[i].begL = i*block;
+        para[i].endL = i!=CORE_NUMBER?((i + 1) * block):nnz;
+        para[i].ret=ret;
+        para[i].m=m;
+        para[i].n=n;
+        para[i].k=k;
+    }
+    for(int i = 0 ; i < totThreads ; ++i){
+        pthread_create(pids+i,NULL,(void*)specMatMat_transB_part,para+i);
+    }
+    for(int i = 0 ; i < totThreads; ++i){
+        pthread_join(pids[i],NULL);
+    }
+    free(para);
+    free(pids);
+}
+#else
+void specMatmat_transB(const sparseMtx*cp,type*ret,type *A,type*BT,int m,int k,int n){
+    int nnz = cp->ia[m] - cp->ia[0];
+#pragma omp parallel for
     for(int i = 0 ; i < nnz; ++i){
         //printf("%d\n",cp->OtherI[i]);
         dotprod(ret+i,A+cp->OtherI[i]*k,BT+cp->ja[i]*k,k);
         ret[i] = cp->val[i]-ret[i];
         ret[i]*=ret[i];
         //exit(0);
-    }/*
-    #pragma parallel omp for
-    for(int row = 0 ; row < m ; ++row){
-#pragma parallel omp for
-        for(int j = cp->ia[row];j < cp->ia[row+1]; ++j){
-            dotprod(ret+j, A + row * k, BT + cp->ja[j] * k, k);
-            ret[j] = cp->val[j]-ret[j];
-            ret[j]*=ret[j];
-        }
-    }*/
-}
-void ll_dotprod(type *result,type *a,type *b ,int len){
-    *result = 0.0;
-    type *ba = a;
-    type *bb = b;
-    type *ea = a+len/CORE_NUMBER*CORE_NUMBER;
-    type *tea = a+len;
-    type res[CORE_NUMBER] = {0};
-    for(;ba!=ea; ba+=CORE_NUMBER,bb+=CORE_NUMBER){
-        res[0]+=ba[0]*bb[0];
-        res[1]+=ba[1]*bb[1];
-        res[2]+=ba[2]*bb[2];
-        res[3]+=ba[3]*bb[3];
-        /*res[4]+=ba[4]*bb[4];
-        res[5]+=ba[5]*bb[5];
-        res[6]+=ba[6]*bb[6];
-        res[7]+=ba[7]*bb[7];*/
     }
-    while (ba!=tea){
-        *result+=*ba*(*bb);
-        ++ba;
-        ++bb;
-    }
-    for(int i = 0 ;i < CORE_NUMBER ; ++i)*result+=res[i];
 }
-
-
+#endif
 
 
 float dotproduct(float *vec1, float *vec2, int n)
@@ -252,13 +265,12 @@ void check_empMem(void *p){
 
 
 #ifdef CG_SWITCH
-void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float threshold)
-{
+void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float threshold) {
     memset(x, 0, sizeof(float) * n);
-    float *residual = (float *)malloc(sizeof(float) * n);
-    float *y = (float *)malloc(sizeof(float) * n);
-    float *p = (float *)malloc(sizeof(float) * n);
-    float *q = (float *)malloc(sizeof(float) * n);
+    float *residual = (float *) malloc(sizeof(float) * n);
+    float *y = (float *) malloc(sizeof(float) * n);
+    float *p = (float *) malloc(sizeof(float) * n);
+    float *q = (float *) malloc(sizeof(float) * n);
     *iter = 0;
     float norm = 0;
     float rho = 0;
@@ -268,21 +280,17 @@ void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float thres
     matvec(A, x, y, n, n);
     for (int i = 0; i < n; i++)
         residual[i] = b[i] - y[i];
-    type vecB = vec2norm(b,n)*threshold;
-
-    do
-    {
+    type vecB = vec2norm(b, n) * threshold;
+    do {
         //printf("\ncg iter = %i\n", *iter);
         rho = dotproduct(residual, residual, n);
-        if (*iter == 0)
-        {
-            memcpy(p,residual, sizeof(type)*n);
-        }
-        else
-        {
+        if (*iter == 0) {
+            memcpy(p, residual, sizeof(type) * n);
+        } else {
             float beta = rho / rho_1;
-            for (int i = 0; i < n; i++)
+            for (int i = 0; i < n; i++) {
                 p[i] = residual[i] + beta * p[i];
+            }
         }
 
         matvec(A, p, q, n, n);
@@ -292,18 +300,16 @@ void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float thres
             x[i] += alpha * p[i];
 
         for (int i = 0; i < n; i++)
-            residual[i] += - alpha * q[i];
+            residual[i] -= alpha * q[i];
 
         rho_1 = rho;
         float error = vec2norm(residual, n);
-
 
         *iter += 1;
 
         if (error < vecB)
             break;
-    }
-    while (*iter < maxiter);
+    } while (*iter < maxiter);
 
     free(residual);
     free(y);

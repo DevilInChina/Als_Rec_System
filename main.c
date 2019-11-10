@@ -3,7 +3,6 @@
 #include <zconf.h>
 #include "mmio_highlevel.h"
 
-#define THREAD_NUMBERS 160
 
 void printmat(float *A, int m, int n)
 {
@@ -40,7 +39,7 @@ void updateMtx_part(Para*parameter){
     int maxnzr = 0;
 
     for (int i = parameter->begL; i < parameter->endL; i++){
-        maxnzr = max(maxnzr,parameter->Mtx->ia[i+1]-parameter->Mtx->ia[i]);
+        maxnzr = max(maxnzr,parameter->Mtx->ia[i+1]-parameter->Mtx->ia[i]); /// n
     }
     float *ri = (float *)malloc(sizeof(float) * maxnzr);
     float *sX = (float *)malloc(sizeof(float) * maxnzr * parameter->f);
@@ -56,20 +55,18 @@ void updateMtx_part(Para*parameter){
         int endN = parameter->Mtx->ia[i+1];
         int nzcur = endN - begN;
 
-        memcpy(ri,parameter->Mtx->val+begN, sizeof(float)*nzcur);
+        memcpy(ri,parameter->Mtx->val+begN, sizeof(float)*nzcur);/// n*maxNZR
 
         int count = 0;
-        ///
-//#pragma parallel omp for
-        for(int k = begN ; k < endN ; ++k){
+        for(int k = begN ; k < endN ; ++k){///maxNZR * f * n
             memcpy(sX+(k-begN) * parameter->f, &parameter->Unchange[parameter->Mtx->ja[k] * parameter->f], sizeof(float) * parameter->f);
         }
 
-        transpose(sXT, sX, nzcur, parameter->f);
+        transpose(sXT, sX, nzcur, parameter->f);///n * nzcur * f
 
-        matmat_BtB(smat, sXT, parameter->f, nzcur, parameter->f);
+        matmat_BtB(smat, sXT, parameter->f, nzcur, parameter->f);//// n*f*nzcur*f*0.5
 
-        for (int j = 0; j < parameter->f; j++)
+        for (int j = 0; j < parameter->f; ++j)
             smat[j * parameter->f + j] += parameter->lamda;
 
         gettimeofday(&t2, NULL);
