@@ -8,6 +8,7 @@
 #include <math.h>
 #include <sys/time.h>
 
+#define OFAS
 
 #define CORE_NUMBER 4
 #define type float
@@ -18,6 +19,7 @@ typedef struct sparseMtx{
     int m,n;
     int *ia;/// m+1
     int *ja;/// nnz
+    int *OtherI; /// nnz
     type *val;
 }sparseMtx;
 
@@ -31,7 +33,28 @@ typedef struct sparseMtx{
 #define trans_Prev(i,m,n)\
 ((i)%(m)*(n))+((i)/(m))
 
-inline type dotprod(type *res,const type *a,const type *b,int len) {
+typedef struct Para{
+    sparseMtx *Mtx;
+    float *Unchange;
+    float *Update;
+    int f;
+    float lamda;
+    int begL;
+    int endL;
+    double time_prepareA;
+    double time_prepareb;
+    double time_solver;
+}Para;
+
+#ifdef OFAST
+void updateMtx_part(Para*parameter) __attribute__((optimize("Ofast")));
+
+void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
+                       int f, float lamda, int begL, int endL,
+                       double *time_prepareA, double *time_prepareb, double *time_solver) __attribute__((optimize("Ofast")));
+type dotprod(type *res,const type *a,const type *b,int len) __attribute__((optimize("Ofast")));
+#endif
+type dotprod(type *res,const type *a,const type *b,int len) {
     (*res) = 0;
     for (const type *ba = a, *bb = b, *ea = a + len; ba != ea; ++ba, ++bb)(*res) += *ba * (*bb);
 }
@@ -78,14 +101,17 @@ void matmat(type *C,type *A,type *B,int m,int k,int n){
     //trans_to_T_matrix(B,n,k);
 }
 double kkk = 0;
-void matmat_transB(float *C, const float *A, const float *BT, int m, int k, int n)
+void matmat_BtB(float *C, const float *BT, int m, int k, int n)
 {
     memset(C, 0, sizeof(float) * m * n);
     type res;
     for (int i = 0; i < m; i++) {
-        for (int j = 0; j < n; j++) {
-            dotprod(&res, A + i * k, BT + j * k, k);
+        for (int j = i; j < n; j++) {
+            dotprod(&res, BT + i * k, BT + j * k, k);
             C[pos(i,j,n)] = res;
+            if(i!=j){
+                C[pos(j,i,m)] = res;
+            }
         }
     }
 }
@@ -106,15 +132,24 @@ int check(type *a,int len){
 }
 
 void specMatmat_transB(const sparseMtx*cp,type*ret,type *A,type*BT,int m,int k,int n){
+    int nnz = cp->ia[m] - cp->ia[0];
 #pragma parallel omp for
+    for(int i = 0 ; i < nnz; ++i){
+        //printf("%d\n",cp->OtherI[i]);
+        dotprod(ret+i,A+cp->OtherI[i]*k,BT+cp->ja[i]*k,k);
+        ret[i] = cp->val[i]-ret[i];
+        ret[i]*=ret[i];
+        //exit(0);
+    }/*
+    #pragma parallel omp for
     for(int row = 0 ; row < m ; ++row){
-        for(int j = cp->ia[row],col;j < cp->ia[row+1]; ++j){
-            col = cp->ja[j];
-            dotprod(ret+j, A + row * k, BT + col * k, k);
+#pragma parallel omp for
+        for(int j = cp->ia[row];j < cp->ia[row+1]; ++j){
+            dotprod(ret+j, A + row * k, BT + cp->ja[j] * k, k);
             ret[j] = cp->val[j]-ret[j];
             ret[j]*=ret[j];
         }
-    }
+    }*/
 }
 void ll_dotprod(type *result,type *a,type *b ,int len){
     *result = 0.0;
@@ -321,35 +356,12 @@ void cg(type *A, type *x, type *b, int n, int *iter, int maxiter, type threshold
     cgbegT+=(t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
 }
 #endif
-void cscDestory(sparseMtx*P){
-    free(P->val);
-    free(P->ja);
-    free(P->ia);
-}
-void csrDestory(sparseMtx*P){
-    free(P->val);
-    free(P->ja);
-    free(P->ia);
-}
-void denseToCsr(const type *x,int m,int n,sparseMtx *Csr,int nnz) {
-    Csr->m = m;
-    Csr->n = n;
-    Csr->ia = (int *) malloc(sizeof(int) * (m + 1));
-    Csr->ja = (int *) malloc(sizeof(int) * nnz);
-    Csr->val = (type *) malloc(sizeof(type) * nnz);
-    int nnzc = 0;
-    Csr->ia[0] = 0;
-    for (int i = 0; i < m; ++i) {
-        for (int j = 0; j < n; ++j) {
-            if (x[pos(i,j,n)] != 0) {
-                Csr->ja[nnzc] = j;
-                Csr->val[nnzc] = x[pos(i,j,n)];
-                ++nnzc;
-            }
-        }
-        Csr->ia[i+1] = nnzc;
-    }
 
+void mtxDestory(sparseMtx *P){
+    free(P->val);
+    free(P->ja);
+    free(P->ia);
+    free(P->OtherI);
 }
 
 void transpose(float *AT, const float *A, int m, int n)
@@ -358,22 +370,14 @@ void transpose(float *AT, const float *A, int m, int n)
         for (int j = 0; j < n; j++)
             AT[j * m + i] = A[i * n + j];
 }
-void denseToCsc(const type *x,int m,int n,sparseMtx *Csc,int nnz) {
-    type*TEMP=(type*)malloc(sizeof(type)*m*n);
-    transpose(TEMP,x,m,n);
-    sparseMtx Mtx;
-    denseToCsr(TEMP,n,m,&Mtx,nnz);
-    Csc->ia = Mtx.ia;
-    Csc->ja = Mtx.ja;
-    Csc->val = Mtx.val;
-    free(TEMP);
-}
+
 
 void csrToCsc(const sparseMtx*Mtx,sparseMtx *ret){
     ret->n = Mtx->n;
     ret->m = Mtx->m;
     ret->ia = calloc(sizeof(int),(ret->n+1));
     ret->ja = malloc(sizeof(int)*(Mtx->ia[Mtx->m] - Mtx->ia[0]));
+    ret->OtherI = malloc(sizeof(int)*(Mtx->ia[Mtx->m] - Mtx->ia[0]));
     ret->val = malloc(sizeof(type)*(Mtx->ia[Mtx->m] - Mtx->ia[0]));
     int m = ret->m,n = ret->n;
 
@@ -394,6 +398,7 @@ void csrToCsc(const sparseMtx*Mtx,sparseMtx *ret){
         ret->ja[ret->ia[col]+cnt[col]] = row;
         ret->val[ret->ia[col]+cnt[col]] = Mtx->val[i];
         ++cnt[col];
+        Mtx->OtherI[i] = row;
         if(i+1==Mtx->ia[row+1]){
             ++row;
         }

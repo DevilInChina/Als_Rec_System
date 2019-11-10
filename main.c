@@ -4,6 +4,7 @@
 #include "mmio_highlevel.h"
 
 #define THREAD_NUMBERS 160
+
 void printmat(float *A, int m, int n)
 {
     for (int i = 0; i < m; i++)
@@ -31,21 +32,8 @@ double getTolTime(struct timeval *t1,struct timeval *t2){
 }
 
 
-typedef struct Para{
-    sparseMtx *Mtx;
-    float *Unchange;
-    float *Update;
-    int f;
-    float lamda;
-    int begL;
-    int endL;
-    double time_prepareA;
-    double time_prepareb;
-    double time_solver;
-}Para;
 
-void updateMtx_part(Para*parameter)
-{
+void updateMtx_part(Para*parameter){
     struct timeval t1, t2;
     float *smat = (float *)malloc(sizeof(float) * parameter->f * parameter->f);
     float *svec = (float *)malloc(sizeof(float) * parameter->f);
@@ -79,7 +67,7 @@ void updateMtx_part(Para*parameter)
 
         transpose(sXT, sX, nzcur, parameter->f);
 
-        matmat_transB(smat, sXT, sXT, parameter->f, nzcur, parameter->f);
+        matmat_BtB(smat, sXT, parameter->f, nzcur, parameter->f);
 
         for (int j = 0; j < parameter->f; j++)
             smat[j * parameter->f + j] += parameter->lamda;
@@ -109,6 +97,7 @@ void updateMtx_part(Para*parameter)
     free(smat);
     free(svec);
 }
+
 void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
                     int f, float lamda, int begL, int endL,
                       double *time_prepareA, double *time_prepareb, double *time_solver)
@@ -129,6 +118,8 @@ void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
         para[i].time_solver=0;
         para[i].time_prepareb=0;
         para[i].time_prepareA=0;
+    }
+    for(int i = 0 ; i < totThreads ; ++i){
         pthread_create(pids+i,NULL,(void*)updateMtx_part,para+i);
     }
     for(int i = 0 ; i < totThreads; ++i){
@@ -207,7 +198,6 @@ void als_recsys( sparseMtx*MtxR, float *X, float *Y,
         error_new = 0.0;
         ///printf("R:%f%% X:%f%% Y:%f%%\n",100.0*getnnz(R,n*m)/m/n,100.0*getnnz(X,f*m)/m/f,100.0*getnnz(Y,n*f)/f/n);
         int nnz = nnzR;
-
         for(int i = 0 ; i < nnzR ; ++i){
             error_new+=Rp[i];
         }
@@ -241,8 +231,8 @@ void als_recsys( sparseMtx*MtxR, float *X, float *Y,
     printf("InCg     %4.2f ms\n",cgbegT);
     free(Rp);
 
-    //csrDestory(MtxR);
-    cscDestory(&MtxC);
+    //mtxDestory(MtxR);
+    mtxDestory(&MtxC);
 }
 
 
@@ -270,11 +260,18 @@ int main(int argc, char ** argv)
     mmap_io_data(csrRowPtrR, csrColIdxR, csrValR, filename);
 
     sparseMtx R;
+    R.OtherI = malloc(sizeof(int)*nnzR);
+
     R.n = n;
     R.m = m;
     R.ia = csrRowPtrR;
     R.ja = csrColIdxR;
     R.val = csrValR;
+    for(int i = 0 ; i < m ; ++i){
+        for(int j = R.ia[i] ; j < R.ia[i+1] ; ++j){
+            R.OtherI[j] = i;
+        }
+    }
     printf("The order of the rating matrix R is %i by %i, #nonzeros = %i\n",
            m, n, nnzR);
 
@@ -302,6 +299,6 @@ int main(int argc, char ** argv)
     }
     free(X);
     free(Y);
-    csrDestory(&R);
+    mtxDestory(&R);
 }
 /// 13 0.000086 netflix.mtx 8
