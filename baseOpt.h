@@ -22,7 +22,7 @@ typedef struct sparseMtx{
 }sparseMtx;
 
 #define pos(i,j,M) ((i)*(M)+(j))
-
+#define CG_SWITCH
 
 ///@todo add parallel on matmat
 #define trans_Next(i,m,n)\
@@ -99,22 +99,17 @@ int check(type *a,int len){
  //           printf("%d\n",i);
    //         fflush(stdout);
         }
-     //   ++i;
         ++a;
     }
     return cnt;
 }
 
 void specMatmat_transB(const sparseMtx*cp,type*ret,type *A,type*BT,int m,int k,int n){
-    type res;
+#pragma parallel omp for
     for(int row = 0 ; row < m ; ++row){
         for(int j = cp->ia[row],col;j < cp->ia[row+1]; ++j){
             col = cp->ja[j];
-            dotprod(&res, A + row * k, BT + col * k, k);
-          //  printf("%d %d %d\n",row,col,k);
-            //fflush(stdout);
-            ////@todo wrong here
-            ret[j] = res;
+            dotprod(ret+j, A + row * k, BT + col * k, k);
         }
     }
 }
@@ -171,7 +166,7 @@ float vec2norm(float *x, int n)
 
 void residual(type *A,type*x,type *b,type *y,int n){
     for(int i = 0 ; i < n ; ++i)y[i] = 0.0;
-    matvec(y,A,x,n,n);
+    matvec(A,x,y,n,n);
     for(int i = 0 ; i < n ; ++i)y[i] = b[i] - y[i];
 }
 type getF(type *a,type *A,int n,type *temp){////using temp storage
@@ -195,7 +190,30 @@ void showMtx(const type *a,int n,int m){
     printf("]\n");
 }
 
-/*
+
+int getnnz(type* A,int tot){
+    type *e = A+tot;
+    int ret = 0;
+    while (A!=e){
+        if(fabsf(*A)>0.1)++ret;
+        ++A;
+    }
+    return ret;
+}
+double cgbegT;
+
+void check_empMem(void *p){
+    if(p==NULL){
+        printf("memory alloc failed.\n");
+        exit(0);
+    }else{
+        printf("memory checked succeed.\n");
+        fflush(stdout);
+    }
+}
+
+
+#ifdef CG_SWITCH
 void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float threshold)
 {
     memset(x, 0, sizeof(float) * n);
@@ -212,7 +230,7 @@ void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float thres
     matvec(A, x, y, n, n);
     for (int i = 0; i < n; i++)
         residual[i] = b[i] - y[i];
-    //printvec(residual, n);
+    type vecB = vec2norm(b,n)*threshold;
 
     do
     {
@@ -239,11 +257,12 @@ void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float thres
             residual[i] += - alpha * q[i];
 
         rho_1 = rho;
+        float error = vec2norm(residual, n);
 
         //printvec(x, n);
         *iter += 1;
-        float error = vec2norm(residual, n) / vec2norm(b, n);
-        if (error < threshold)
+
+        if (error < vecB)
             break;
     }
     while (*iter < maxiter);
@@ -253,27 +272,7 @@ void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float thres
     free(p);
     free(q);
 }
-*/
-
-int getnnz(type* A,int tot){
-    type *e = A+tot;
-    int ret = 0;
-    while (A!=e){
-        if(fabsf(*A)>0.1)++ret;
-        ++A;
-    }
-    return ret;
-}
-double cgbegT;
-void check_empMem(void *p){
-    if(p==NULL){
-        printf("memory alloc failed.\n");
-        exit(0);
-    }else{
-        printf("memory checked succeed.\n");
-        fflush(stdout);
-    }
-}
+#else
 void cg(type *A, type *x, type *b, int n, int *iter, int maxiter, type threshold) {
     struct timeval t1,t2;
     gettimeofday(&t1,NULL);
@@ -285,12 +284,12 @@ void cg(type *A, type *x, type *b, int n, int *iter, int maxiter, type threshold
     type *temp = (type*)malloc(sizeof(type)*n);
     for (int i = 0; i < n; ++i)x[i] = 0.0;
     type rdot, rdot_1 = 0;
-
+    type bvecMM = 0;
+    dotprod(&bvecMM,b,b,n);
+    bvecMM = sqrtf(bvecMM)*threshold;
+    dotprod(&rdot, r, r, n);
     for (*iter = 0; *iter < maxiter; ++*iter) {
-        dotprod(&rdot, r, r, n);
-        if (sqrtf(rdot) < threshold) {
-            break;
-        }
+
         type beta;
         if (!*iter);
         else {
@@ -308,7 +307,8 @@ void cg(type *A, type *x, type *b, int n, int *iter, int maxiter, type threshold
             r[i] -= temp[i] * alpha;
         }
         rdot_1 = rdot;
-
+        dotprod(&rdot, r, r, n);
+        if(sqrtf(rdot)<bvecMM)break;
     }
 
     free(temp);
@@ -317,6 +317,7 @@ void cg(type *A, type *x, type *b, int n, int *iter, int maxiter, type threshold
     gettimeofday(&t2,NULL);
     cgbegT+=(t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
 }
+#endif
 void cscDestory(sparseMtx*P){
     free(P->val);
     free(P->ja);
