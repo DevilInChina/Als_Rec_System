@@ -143,7 +143,7 @@ typedef struct TransB_Parameter{
 }TransB_Parameter;
 #ifdef SPEC_MATMAT_TRANSB_MULTITHREAD
 void specMatMat_transB_part(TransB_Parameter*para){
-#pragma omp parallel for
+//#pragma omp parallel for
     for(int i = para->begL ; i < para->endL; ++i){
         dotprod(para->ret+i,para->A+para->cp->OtherI[i]*para->k,para->BT+para->cp->ja[i]*para->k,para->k);
         para->ret[i] = para->cp->val[i]-para->ret[i];
