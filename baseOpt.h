@@ -30,9 +30,10 @@ typedef struct sparseMtx{
 
 #define trans_Prev(i,m,n)\
 ((i)%(m)*(n))+((i)/(m))
-type dotprod(type *res,type *a,type *b,int len) {
+
+inline type dotprod(type *res,const type *a,const type *b,int len) {
     (*res) = 0;
-    for (type *ba = a, *bb = b, *ea = a + len; ba != ea; ++ba, ++bb)(*res) += *ba * (*bb);
+    for (const type *ba = a, *bb = b, *ea = a + len; ba != ea; ++ba, ++bb)(*res) += *ba * (*bb);
 }
 void transMoveData(type *mtx,int i,int m,int n){
     type s = mtx[i];
@@ -77,7 +78,7 @@ void matmat(type *C,type *A,type *B,int m,int k,int n){
     //trans_to_T_matrix(B,n,k);
 }
 double kkk = 0;
-void matmat_transB(float *C, float *A, float *BT, int m, int k, int n)
+void matmat_transB(float *C, const float *A, const float *BT, int m, int k, int n)
 {
     memset(C, 0, sizeof(float) * m * n);
     type res;
@@ -110,6 +111,8 @@ void specMatmat_transB(const sparseMtx*cp,type*ret,type *A,type*BT,int m,int k,i
         for(int j = cp->ia[row],col;j < cp->ia[row+1]; ++j){
             col = cp->ja[j];
             dotprod(ret+j, A + row * k, BT + col * k, k);
+            ret[j] = cp->val[j]-ret[j];
+            ret[j]*=ret[j];
         }
     }
 }
@@ -238,8 +241,7 @@ void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float thres
         rho = dotproduct(residual, residual, n);
         if (*iter == 0)
         {
-            for (int i = 0; i < n; i++)
-                p[i] = residual[i];
+            memcpy(p,residual, sizeof(type)*n);
         }
         else
         {
@@ -250,16 +252,17 @@ void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float thres
 
         matvec(A, p, q, n, n);
         float alpha = rho / dotproduct(p, q, n);
-        //printf("alpha = %f\n", alpha);
+
         for (int i = 0; i < n; i++)
             x[i] += alpha * p[i];
+
         for (int i = 0; i < n; i++)
             residual[i] += - alpha * q[i];
 
         rho_1 = rho;
         float error = vec2norm(residual, n);
 
-        //printvec(x, n);
+
         *iter += 1;
 
         if (error < vecB)

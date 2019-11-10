@@ -3,7 +3,7 @@
 #include <zconf.h>
 #include "mmio_highlevel.h"
 
-#define THREAD_NUMBERS 16
+#define THREAD_NUMBERS 160
 void printmat(float *A, int m, int n)
 {
     for (int i = 0; i < m; i++)
@@ -72,15 +72,14 @@ void updateMtx_part(Para*parameter)
 
         int count = 0;
         ///
-
+//#pragma parallel omp for
         for(int k = begN ; k < endN ; ++k){
-            int row = parameter->Mtx->ja[k];
-            memcpy(sX+(k-begN) * parameter->f, &parameter->Unchange[row * parameter->f], sizeof(float) * parameter->f);
+            memcpy(sX+(k-begN) * parameter->f, &parameter->Unchange[parameter->Mtx->ja[k] * parameter->f], sizeof(float) * parameter->f);
         }
 
         transpose(sXT, sX, nzcur, parameter->f);
 
-        matmat(smat, sXT, sX, parameter->f, nzcur, parameter->f);
+        matmat_transB(smat, sXT, sXT, parameter->f, nzcur, parameter->f);
 
         for (int j = 0; j < parameter->f; j++)
             smat[j * parameter->f + j] += parameter->lamda;
@@ -114,39 +113,32 @@ void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
                     int f, float lamda, int begL, int endL,
                       double *time_prepareA, double *time_prepareb, double *time_solver)
 {
-    Para *para=malloc(sizeof(Para)*THREAD_NUMBERS);
-    pthread_t *pids = malloc(sizeof(pthread_t)*THREAD_NUMBERS);
+    int k =  (endL-begL)%THREAD_NUMBERS;
+    int totThreads = THREAD_NUMBERS+(k!=0);
+    Para *para=malloc(sizeof(Para)*(totThreads));
+    pthread_t *pids = malloc(sizeof(pthread_t)*totThreads);
     int block = (endL-begL)/THREAD_NUMBERS;
-    for(int i = 0 ; i < THREAD_NUMBERS ; ++i){
+    for(int i = 0 ; i < totThreads ; ++i){
         para[i].Mtx = Mtx;
         para[i].Unchange = Unchange;
         para[i].Update = Update;
         para[i].f=f;
         para[i].lamda=lamda;
         para[i].begL = begL+i*block;
-        para[i].endL = begL+(i+1)*block;
+        para[i].endL = i!=THREAD_NUMBERS?(begL + (i + 1) * block):endL;
         para[i].time_solver=0;
         para[i].time_prepareb=0;
         para[i].time_prepareA=0;
         pthread_create(pids+i,NULL,(void*)updateMtx_part,para+i);
     }
-    for(int i = 0 ; i < THREAD_NUMBERS; ++i){
+    for(int i = 0 ; i < totThreads; ++i){
         pthread_join(pids[i],NULL);
     }
-    for(int i = 0 ; i < THREAD_NUMBERS; ++i){
+    for(int i = 0 ; i < totThreads; ++i){
         *time_prepareA+=para[i].time_prepareA/THREAD_NUMBERS;
         *time_prepareb+=para[i].time_prepareb/THREAD_NUMBERS;
         *time_solver+=para[i].time_solver/THREAD_NUMBERS;
     }
-    if((endL-begL)%THREAD_NUMBERS){
-        para[0].begL = begL+THREAD_NUMBERS*block;
-        para[0].endL = endL;
-        updateMtx_part(para);
-        *time_prepareA+=para[0].time_prepareA;
-        *time_prepareb+=para[0].time_prepareb;
-        *time_solver+=para[0].time_solver;
-    }
-
     free(para);
     free(pids);
 }
@@ -215,11 +207,9 @@ void als_recsys( sparseMtx*MtxR, float *X, float *Y,
         error_new = 0.0;
         ///printf("R:%f%% X:%f%% Y:%f%%\n",100.0*getnnz(R,n*m)/m/n,100.0*getnnz(X,f*m)/m/f,100.0*getnnz(Y,n*f)/f/n);
         int nnz = nnzR;
-        type temp;
 
         for(int i = 0 ; i < nnzR ; ++i){
-            temp = MtxR->val[i]-Rp[i];
-            error_new+=temp*temp;
+            error_new+=Rp[i];
         }
 
         error_new = sqrtf(error_new/nnz);
