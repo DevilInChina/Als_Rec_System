@@ -30,8 +30,7 @@ double getTolTime(struct timeval *t1,struct timeval *t2){
     return (t2->tv_sec - t1->tv_sec) * 1000.0 + (t2->tv_usec - t1->tv_usec) / 1000.0;
 }
 
-
-
+#ifdef UPDATE_MTX_MULTITHREAD
 void updateMtx_part(Para*parameter){
     struct timeval t1, t2;
     float *smat = (float *)malloc(sizeof(float) * parameter->f * parameter->f);
@@ -84,7 +83,6 @@ void updateMtx_part(Para*parameter){
 
         gettimeofday(&t2, NULL);
         parameter->time_solver += (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
-
     }
 
 
@@ -130,7 +128,55 @@ void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
     free(para);
     free(pids);
 }
+#else
 
+void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
+                    int f, float lamda, int begL, int endL,
+                      double *time_prepareA, double *time_prepareb, double *time_solver){
+#pragma omp parallel for
+    for (int i = begL; i < endL; i++)
+    {
+
+        float *partOfUpdate = Update+i * f;
+
+        int begN = Mtx->ia[i];
+        int endN = Mtx->ia[i+1];
+        int nzcur = endN - begN;
+
+        float *smat = (float *)malloc(sizeof(float) * f * f);
+        float *svec = (float *)malloc(sizeof(float) * f);
+
+        float *ri = (float *)malloc(sizeof(float) * nzcur);
+        float *sX = (float *)malloc(sizeof(float) * nzcur * f);
+        float *sXT = (float *)malloc(sizeof(float) * nzcur * f);
+        memcpy(ri,Mtx->val+begN, sizeof(float)*nzcur);/// n*maxNZR
+
+        for(int k = begN ; k < endN ; ++k){///maxNZR * f * n
+            memcpy(sX+(k-begN) * f, &Unchange[Mtx->ja[k] * f], sizeof(float) * f);
+        }
+
+        transpose(sXT, sX, nzcur, f);///n * nzcur * f
+
+        matmat_BtB(smat, sXT, f, nzcur, f);//// n*f*nzcur*f*0.5
+
+        for (int j = 0; j < f; ++j)
+            smat[j * f + j] += lamda;
+
+        matvec(sXT, ri, svec, f, nzcur);
+
+        int cgiter = 0;
+
+        cg(smat, partOfUpdate, svec, f, &cgiter, 100, 0.00001);
+
+        free(ri);
+        free(sX);
+        free(sXT);
+        free(smat);
+        free(svec);
+    }
+
+}
+#endif
 
 void als_recsys( sparseMtx*MtxR, float *X, float *Y,
                 int m, int n, int f, float lamda, int nnzR)
