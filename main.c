@@ -130,9 +130,14 @@ void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
 }
 #else
 
+
 void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
-                    int f, float lamda, int begL, int endL,
-                      double *time_prepareA, double *time_prepareb, double *time_solver){
+                       int f, float lamda, int begL, int endL,
+                       double *time_prepareA, double *time_prepareb, double *time_solver)__attribute__((optimize("Ofast")));
+
+void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
+                       int f, float lamda, int begL, int endL,
+                       double *time_prepareA, double *time_prepareb, double *time_solver){
 #pragma omp parallel for
     for (int i = begL; i < endL; i++)
     {
@@ -165,7 +170,6 @@ void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
         matvec(sXT, ri, svec, f, nzcur);
 
         int cgiter = 0;
-
         cg(smat, partOfUpdate, svec, f, &cgiter, 100, 0.00001);
 
         free(ri);
@@ -179,7 +183,7 @@ void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
 #endif
 
 void als_recsys( sparseMtx*MtxR, float *X, float *Y,
-                int m, int n, int f, float lamda, int nnzR)
+                 int m, int n, int f, float lamda, int nnzR)
 {/// @Todo convert R to csr csc
     //
 
@@ -191,9 +195,9 @@ void als_recsys( sparseMtx*MtxR, float *X, float *Y,
     float *Rp = (float *)malloc(sizeof(float) * nnzR);
 
     int iter = 0;
-    float error = 0.0;
-    float error_old = 0.0;
-    float error_new = 0.0;
+    double error = 0.0;
+    double error_old = 0.0;
+    double error_new = 0.0;
     struct timeval t1, t2;
 
     double time_updatex_prepareA = 0;
@@ -209,17 +213,18 @@ void als_recsys( sparseMtx*MtxR, float *X, float *Y,
     double time_validate = 0;
     int tot = 0;
     int  Ylen = n*f;
-
+    double time_one = 0;
 
     do{/// R sparse X,Y,Rp dense
         // step 1. update X
+        time_one = 0;
         gettimeofday(&t1, NULL);
 
         updateMtx_recsys(MtxR, Y, X, f, lamda, 0, m,
                          &time_updatex_prepareA, &time_updatex_prepareb, &time_updatex_solver);
         gettimeofday(&t2, NULL);
         time_updatex += (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
-
+        time_one+=(t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
 
         // step 2. update Y
         gettimeofday(&t1, NULL);
@@ -230,7 +235,7 @@ void als_recsys( sparseMtx*MtxR, float *X, float *Y,
 
         gettimeofday(&t2, NULL);
         time_updatey += (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
-
+        time_one+=(t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
         // step 3. validate
         // step 3-1. matrix multiplication
         gettimeofday(&t1, NULL);
@@ -239,7 +244,6 @@ void als_recsys( sparseMtx*MtxR, float *X, float *Y,
 
         // step 3-2. calculate error
         error_new = 0.0;
-        ///printf("R:%f%% X:%f%% Y:%f%%\n",100.0*getnnz(R,n*m)/m/n,100.0*getnnz(X,f*m)/m/f,100.0*getnnz(Y,n*f)/f/n);
         int nnz = nnzR;
         for(int i = 0 ; i < nnzR ; ++i){
             error_new+=Rp[i];
@@ -249,11 +253,11 @@ void als_recsys( sparseMtx*MtxR, float *X, float *Y,
 
         gettimeofday(&t2, NULL);
         time_validate += (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
-
-        error = fabsf(error_new - error_old) / error_new;
+        time_one+=(t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
+        error = fabs(error_new - error_old) / error_new;
 
         error_old = error_new;
-        printf("iter = %i, error = %f %f\n", iter, error,error_new);
+        printf("iter = %i, error = %f err_new = %f time = %f\n", iter, error,error_new,time_one);
 
         iter++;
     }
@@ -329,7 +333,7 @@ int main(int argc, char ** argv)
     float *Y = (float *)malloc(sizeof(float) * n * f);
 
     for (int i = 0,tot = n*f; i < tot; i++)
-        Y[i] = 1;
+       Y[i] = 1;
 
     // lamda parameter
     float lamda = 0.1;

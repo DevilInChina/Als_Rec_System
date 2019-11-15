@@ -56,7 +56,7 @@ typedef struct Para{
 
 #ifdef OFAST
 
-void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float threshold) __attribute__((optimize("Ofast")));
+//void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float threshold) __attribute__((optimize("Ofast")));
 #endif
 inline type dotprod(type *res,const type *a,const type *b,int len) {
     (*res) = 0;
@@ -128,8 +128,8 @@ int check(type *a,int len){
     while (a!=be){
         if(isnan(*a)) {
             ++cnt;
- //           printf("%d\n",i);
-   //         fflush(stdout);
+            //           printf("%d\n",i);
+            //         fflush(stdout);
         }
         ++a;
     }
