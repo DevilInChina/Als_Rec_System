@@ -129,15 +129,15 @@ void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
     free(pids);
 }
 #else
-
+#define TRANS_POS
 
 void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
                        int f, float lamda, int begL, int endL,
                        double *time_prepareA, double *time_prepareb, double *time_solver)__attribute__((optimize("Ofast")));
 
-void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
-                       int f, float lamda, int begL, int endL,
-                       double *time_prepareA, double *time_prepareb, double *time_solver){
+void updateDense_recsys(sparseMtx *Mtx, float *Unchange, float *Update,
+                        int f, float lamda, int begL, int endL,
+                        double *time_prepareA, double *time_prepareb, double *time_solver){
 #pragma omp parallel for
     for (int i = begL; i < endL; i++)
     {
@@ -148,13 +148,15 @@ void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
         int endN = Mtx->ia[i+1];
         int nzcur = endN - begN;
 
-        float *smat = (float *)malloc(sizeof(float) * f * f);
-        float *svec = (float *)malloc(sizeof(float) * f);
-
-        float *ri = (float *)malloc(sizeof(float) * nzcur);
-        float *sX = (float *)malloc(sizeof(float) * nzcur * f);
-        float *sXT = (float *)malloc(sizeof(float) * nzcur * f);
-        memcpy(ri,Mtx->val+begN, sizeof(float)*nzcur);/// n*maxNZR
+        float *temp = (float*)malloc(sizeof(float)*(f*(f+5) + 2*f*(nzcur)+nzcur));
+        float *smat = temp;
+        float *svec = smat+f*f;
+        float *ri = svec+f;///nzcur
+        float *sX = ri+nzcur;//(float *)malloc(sizeof(float) * (1+nzcur) * f);
+        float *sXT = sX+nzcur*f;//(float *)malloc(sizeof(float) * (1+nzcur) * f);
+        float *cgSphere=sXT+nzcur*f;
+        memcpy(ri,Mtx->val+begN, sizeof(float)*nzcur);
+       // memcpy(ri,Mtx->val+begN, sizeof(float)*nzcur);/// n*maxNZR
 
         for(int k = begN ; k < endN ; ++k){///maxNZR * f * n
             memcpy(sX+(k-begN) * f, &Unchange[Mtx->ja[k] * f], sizeof(float) * f);
@@ -162,24 +164,55 @@ void updateMtx_recsys( sparseMtx *Mtx, float *Unchange, float *Update,
 
         transpose(sXT, sX, nzcur, f);///n * nzcur * f
 
-        matmat_BtB(smat, sXT, f, nzcur, f);//// n*f*nzcur*f*0.5
-
-        for (int j = 0; j < f; ++j)
-            smat[j * f + j] += lamda;
+        matmat_BtB(smat, sXT, nzcur, f, lamda);//// n*f*nzcur*f*0.5
 
         matvec(sXT, ri, svec, f, nzcur);
 
         int cgiter = 0;
-        cg(smat, partOfUpdate, svec, f, &cgiter, 100, 0.00001);
-
-        free(ri);
-        free(sX);
-        free(sXT);
-        free(smat);
-        free(svec);
+        cg(smat, partOfUpdate, svec,cgSphere,cgSphere+f,cgSphere+2*f,cgSphere+3*f, f, &cgiter, 100, 0.00001);
+        free(temp);
     }
 
 }
+void updateSparse_recsys(sparseMtx *Mtx, float *Unchange, float *Update,
+                         int f, float lamda, int begL, int endL,
+                         double *time_prepareA, double *time_prepareb, double *time_solver){
+#pragma omp parallel for
+    for (int i = begL; i < endL; i++)
+    {
+        float *partOfUpdate = Update+i * f;
+
+        int begN = Mtx->ia[i];
+        int endN = Mtx->ia[i+1];
+        int nzcur = endN - begN;
+        float *temp = (float*)malloc(sizeof(float)*(f*(f+5) + f*(nzcur)+nzcur));
+
+        float *smat = temp;
+        float *svec = smat+f*f;
+        float *ri = svec+f;///nzcur
+        float *sXt = ri+nzcur;//(float *)malloc(sizeof(float) * (1+nzcur) * f);
+        float *sXT = sXt+(4)*f;//(float *)malloc(sizeof(float) * (1+nzcur) * f);
+        memcpy(ri,Mtx->val+begN, sizeof(float)*nzcur);/// n*maxNZR
+        for(int k = begN ; k < endN ; ++k){
+            memcpy(sXT+(k-begN)*f,Unchange+Mtx->ja[k]*f, sizeof(float)*f);
+        }
+
+        //transpose(sXT, sX, nzcur, f);///n * nzcur * f
+
+        matMat_P(smat, sXT, nzcur, f,lamda);//// n*f*nzcur*f*0.5 plus lamda
+
+        matTvec(sXT, ri, svec, nzcur, f);
+
+        int cgiter = 0;
+        int maxiter = 100;
+        cg(smat, partOfUpdate, svec,sXt,sXt+f,sXt+f*2,sXt+f*3,f, &cgiter, maxiter, 0.00001);
+        free(temp);
+    }
+
+}
+
+
+
 #endif
 
 void als_recsys( sparseMtx*MtxR, float *X, float *Y,
@@ -219,19 +252,17 @@ void als_recsys( sparseMtx*MtxR, float *X, float *Y,
         // step 1. update X
         time_one = 0;
         gettimeofday(&t1, NULL);
+        updateSparse_recsys(MtxR, Y, X, f, lamda, 0, m,
+                                &time_updatex_prepareA, &time_updatex_prepareb, &time_updatex_solver);
 
-        updateMtx_recsys(MtxR, Y, X, f, lamda, 0, m,
-                         &time_updatex_prepareA, &time_updatex_prepareb, &time_updatex_solver);
         gettimeofday(&t2, NULL);
         time_updatex += (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
         time_one+=(t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
 
         // step 2. update Y
         gettimeofday(&t1, NULL);
-
-        updateMtx_recsys(&MtxC, X, Y, f, lamda, 0, n,
-                         &time_updatey_prepareA, &time_updatey_prepareb, &time_updatey_solver);
-
+        updateSparse_recsys(&MtxC, X, Y, f, lamda, 0, n,
+                               &time_updatey_prepareA, &time_updatey_prepareb, &time_updatey_solver);
 
         gettimeofday(&t2, NULL);
         time_updatey += (t2.tv_sec - t1.tv_sec) * 1000.0 + (t2.tv_usec - t1.tv_usec) / 1000.0;
@@ -261,7 +292,7 @@ void als_recsys( sparseMtx*MtxR, float *X, float *Y,
 
         iter++;
     }
-    while(iter < 1000 && error > 0.0001);
+    while(iter < 4 || error > 0.0001);
 
     //printf("\nR = \n");
     //printmat(R, m, n);

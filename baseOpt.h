@@ -58,66 +58,71 @@ typedef struct Para{
 
 //void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float threshold) __attribute__((optimize("Ofast")));
 #endif
-inline type dotprod(type *res,const type *a,const type *b,int len) {
-    (*res) = 0;
+
+inline void dotprod(type *res,const type *a,const type *b,int len) {
+    *res=0;
     for (const type *ba = a, *bb = b, *ea = a + len; ba != ea; ++ba, ++bb)(*res) += *ba * (*bb);
 }
-void transMoveData(type *mtx,int i,int m,int n){
-    type s = mtx[i];
-    int cur = i;
-    int pre = trans_Prev(i,m,n);
-    while (pre!=i){
-        mtx[cur]=mtx[pre];
-        cur = pre;
-        pre = trans_Prev(cur,m,n);
-    }
-    mtx[cur] = s;
-}
 
-void trans_to_T_matrix(type*A,int m,int n){
-    //  MALLOC(tempA,type,m*n);
-    int k = m*n;
-    for(int i = 0 ; i < k ; ++i){
-        int next = trans_Next(i,m,n);
-        while (next>i){
-            next = trans_Next(next,m,n);
-        }
-        if(next==i){
-            transMoveData(A,i,m,n);
-        }
-    }
-}
-
-
-void matmat(type *C,const type *A,type *B,int m,int k,int n){
-    //trans_to_T_matrix(B,k,n);
-
-    memset(C,0, sizeof(type)*m*n);
-//#pragma omp parallel for
-    for(int i = 0 ; i < m ; ++i){
-        for(int j = 0 ; j < n ; ++j){
-            for(int kk = 0 ; kk < k ; ++kk){
-
-                C[pos(i,j,n)]+=A[pos(i,kk,k)]*B[pos(kk,j,n)];
-            }
-        }
-    }
-    //trans_to_T_matrix(B,n,k);
-}
-double kkk = 0;
-void matmat_BtB(float *C, const float *BT, int m, int k, int n)
-{
-    memset(C, 0, sizeof(float) * m * n);
+void matmat_BtB(float *C, const float *BT, int nzcur, int f,float lamba) {/// f*nzcur
+    memset(C, 0, sizeof(float)  * f);
     type res;
-
-    for (int i = 0; i < m; i++) {
-        for (int j = i; j < n; j++) {
-            dotprod(&res, BT + i * k, BT + j * k, k);
-            C[pos(i,j,n)] = res;
-            if(i!=j){
-                C[pos(j,i,m)] = res;
+    for (int i = 0; i < f; i++) {
+        for (int j = i; j < f; j++) {
+            dotprod(&res, BT + i * nzcur, BT + j * nzcur, nzcur);
+            if (i != j) {
+                C[pos(i, j, f)] = C[pos(j, i, f)] = res;
+            }else{
+                C[pos(i, j, f)] = res+lamba;
             }
         }
+    }
+}
+
+
+inline void axpy(type *y,type a,const type *x,int n){
+    for(int i = 0 ; i < n ; ++i){
+        y[i]+=a*x[i];
+    }
+}
+
+/**
+AT
+ c[11] = a[11]*a[11] + a[12]*a[12] + a[13]*a[13]
+ c[12] = a[11]*a[21] + a[12]*a[22] + a[13]*a[23]
+ c[13] = a[11]*a[31] + a[12]*a[32] + a[13]*a[33]
+A
+ c[11] = a[11]*a[11] + a[21]*a[21] + a[31]*a[31]
+ c[12] = a[11]*a[12] + a[21]*a[22] + a[31]*a[32]
+ c[13] = a[11]*a[13] + a[21]*a[23] + a[31]*a[33]
+
+ */
+#define maxf 64
+void matMat_P(type *smat,const type*X,int nzcur,int f,type lamda){/// nzcur f
+    memset(smat,0,f*f* sizeof(float));
+    type*vec[maxf];
+    for(int i = 0 ; i < f ; ++i){
+        vec[i] = smat+pos(i,i,f);
+    }
+    for(int j = 0 ; j < nzcur ; ++j) {
+        for (int i = 0; i < f; ++i) {
+            //type *vec = smat + pos(i, i, f);
+            axpy(vec[i], X[pos(j, i, f)], X + pos(j, 0, f), f - i);
+        }
+    }
+
+    for(int i = 0; i < f ; ++i){
+        smat[pos(i,i,f)]+=lamda;
+        for(int j = i+1 ; j < f ; ++j){
+            smat[pos(j,i,f)] = smat[pos(i,j,f)];
+        }
+    }
+}
+
+void matTvec(const type *A, const type *x, type *y, int nzcur, int f){
+    memset(y, 0, sizeof(float)*f);
+    for(int i = 0 ; i < nzcur ; ++i){
+        axpy(y,x[i],A+i*f,f);
     }
 }
 
@@ -185,11 +190,9 @@ void specMatmat_transB(const sparseMtx*cp,type*ret,type *A,type*BT,int m,int k,i
     int nnz = cp->ia[m] - cp->ia[0];
 #pragma omp parallel for
     for(int i = 0 ; i < nnz; ++i){
-        //printf("%d\n",cp->OtherI[i]);
         dotprod(ret+i,A+cp->OtherI[i]*k,BT+cp->ja[i]*k,k);
         ret[i] = cp->val[i]-ret[i];
         ret[i]*=ret[i];
-        //exit(0);
     }
 }
 #endif
@@ -202,7 +205,7 @@ float dotproduct(float *vec1, float *vec2, int n)
     return result;
 }
 
-void matvec(float *A, float *x, float *y, int m, int n)
+void matvec(const float *A, const float *x, float *y, int m, int n)
 {
 ///#pragma omp parallel for
     for (int i = 0; i < m; i++)
@@ -268,12 +271,18 @@ void check_empMem(void *p){
 
 
 #ifdef CG_SWITCH
-void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float threshold) {
+
+void deal(type *z,const type*x,type b,const type *y,int n){
+//#pragma omp parallel for
+    for(int i = 0 ; i < n ; ++i){
+        z[i] = x[i] + b*y[i];
+    }
+}
+
+void cg(float *A, float *x, float *b,float *residual,float *y,float *p,float *q, int n, int *iter, int maxiter, float threshold) {
     memset(x, 0, sizeof(float) * n);
-    float *residual = (float *) malloc(sizeof(float) * n);
-    float *y = (float *) malloc(sizeof(float) * n);
-    float *p = (float *) malloc(sizeof(float) * n);
-    float *q = (float *) malloc(sizeof(float) * n);
+  //  float *residual = (float *) malloc(sizeof(float) * n);
+
     *iter = 0;
     float norm = 0;
     float rho = 0;
@@ -281,29 +290,26 @@ void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float thres
 
     // p0 = r0 = b - Ax0
     matvec(A, x, y, n, n);
-    for (int i = 0; i < n; i++)
-        residual[i] = b[i] - y[i];
+    deal(residual,b,-1,y,n);
+ //   for (int i = 0; i < n; i++)residual[i] = b[i] - y[i];
     type vecB = vec2norm(b, n) * threshold;
     do {
         //printf("\ncg iter = %i\n", *iter);
-        rho = dotproduct(residual, residual, n);
+        dotprod(&rho,residual, residual, n);
         if (*iter == 0) {
             memcpy(p, residual, sizeof(type) * n);
         } else {
             float beta = rho / rho_1;
-            for (int i = 0; i < n; i++) {
-                p[i] = residual[i] + beta * p[i];
-            }
+            deal(p,residual,beta,p,n);
+           // for (int i = 0; i < n; i++) {p[i] = residual[i] + beta * p[i];}
         }
 
         matvec(A, p, q, n, n);
         float alpha = rho / dotproduct(p, q, n);
-
-        for (int i = 0; i < n; i++)
-            x[i] += alpha * p[i];
-
-        for (int i = 0; i < n; i++)
-            residual[i] -= alpha * q[i];
+        deal(x,x,alpha,p,n);
+        //for (int i = 0; i < n; i++)x[i] += alpha * p[i];
+        deal(residual,residual,-alpha,q,n);
+        //for (int i = 0; i < n; i++)residual[i] -= alpha * q[i];
 
         rho_1 = rho;
         float error = vec2norm(residual, n);
@@ -314,11 +320,10 @@ void cg(float *A, float *x, float *b, int n, int *iter, int maxiter, float thres
             break;
     } while (*iter < maxiter);
 
-    free(residual);
-    free(y);
-    free(p);
-    free(q);
+
 }
+
+
 #else
 void cg(type *A, type *x, type *b, int n, int *iter, int maxiter, type threshold) {
     struct timeval t1,t2;
